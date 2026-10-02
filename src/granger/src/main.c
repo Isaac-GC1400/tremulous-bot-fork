@@ -20,7 +20,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#include <direct.h>   // _chdir (MinGW's unistd.h clashes with our getopt.h)
+#define chdir _chdir
+#else
 #include <unistd.h>
+#endif
 
 #include "lua.h"
 #include "lauxlib.h"
