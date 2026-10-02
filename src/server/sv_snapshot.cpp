@@ -727,6 +727,8 @@ void SV_SendClientMessages(void)
 
         if (!c->state) continue;  // not connected
 
+        if (c->netchan.remoteAddress.type == NA_BOT) continue;  // bots read game state directly
+
         if (svs.time - c->lastSnapshotTime < c->snapshotMsec * com_timescale->value) continue; // It's not time yet
 
         if (*c->downloadName) continue;  // Client is downloading, don't send snapshots

@@ -83,6 +83,9 @@ vmCvar_t  g_maxNameChanges;
 vmCvar_t  g_alienBuildPoints;
 vmCvar_t  g_alienBuildQueueTime;
 vmCvar_t  g_humanBuildPoints;
+vmCvar_t  g_buildPointsPerPlayer;
+vmCvar_t  g_buildPointsFreePlayers;
+vmCvar_t  g_spawnQueueBoost;
 vmCvar_t  g_humanBuildQueueTime;
 vmCvar_t  g_humanRepeaterBuildPoints;
 vmCvar_t  g_humanRepeaterBuildQueueTime;
@@ -218,6 +221,9 @@ static cvarTable_t   gameCvarTable[ ] =
   { &g_alienBuildQueueTime, "g_alienBuildQueueTime", DEFAULT_ALIEN_QUEUE_TIME, CVAR_ARCHIVE, 0, qfalse  },
   { &g_humanBuildPoints, "g_humanBuildPoints", DEFAULT_HUMAN_BUILDPOINTS, 0, 0, qfalse, cv_humanBuildPoints },
   { &g_humanBuildQueueTime, "g_humanBuildQueueTime", DEFAULT_HUMAN_QUEUE_TIME, CVAR_ARCHIVE, 0, qfalse  },
+  { &g_buildPointsPerPlayer, "g_buildPointsPerPlayer", "5", CVAR_ARCHIVE, 0, qfalse  },
+  { &g_buildPointsFreePlayers, "g_buildPointsFreePlayers", "8", CVAR_ARCHIVE, 0, qfalse  },
+  { &g_spawnQueueBoost, "g_spawnQueueBoost", "1", CVAR_ARCHIVE, 0, qfalse  },
   { &g_humanRepeaterBuildPoints, "g_humanRepeaterBuildPoints", DEFAULT_HUMAN_REPEATER_BUILDPOINTS, CVAR_ARCHIVE, 0, qfalse, cv_humanRepeaterBuildPoints },
   { &g_humanRepeaterMaxZones, "g_humanRepeaterMaxZones", DEFAULT_HUMAN_REPEATER_MAX_ZONES, CVAR_ARCHIVE, 0, qfalse  },
   { &g_humanRepeaterBuildQueueTime, "g_humanRepeaterBuildQueueTime", DEFAULT_HUMAN_REPEATER_QUEUE_TIME, CVAR_ARCHIVE, 0, qfalse  },
@@ -319,7 +325,7 @@ Q_EXPORT intptr_t vmMain( int command, int arg0, int arg1, int arg2 )
       return 0;
 
     case GAME_CLIENT_CONNECT:
-      return (intptr_t)ClientConnect( arg0, arg1 );
+      return (intptr_t)ClientConnect( arg0, arg1, arg2 );
 
     case GAME_CLIENT_THINK:
       ClientThink( arg0 );
@@ -694,6 +700,9 @@ void G_InitGame( int levelTime, int randomSeed, int restart )
     level.humanTeamLocked = qtrue;
     trap_Cvar_Set( "g_lockTeamsAtStart", "0" );
   }
+
+  // server-side bots: cvars and the navigation graph for this map
+  G_BotInit( );
 }
 
 /*
@@ -735,6 +744,8 @@ void G_ShutdownGame( int restart )
     trap_FS_FCloseFile( level.logFile );
     level.logFile = 0;
   }
+
+  G_BotShutdown( );
 
   // write all the client session data so we can get it back
   G_WriteSessionData( );
@@ -1124,6 +1135,40 @@ int G_TimeTilSuddenDeath( void )
 
 /*
 ============
+G_TeamBuildPoints
+
+The team's total build points: g_alienBuildPoints / g_humanBuildPoints,
+plus g_buildPointsPerPlayer for every player on the team beyond
+g_buildPointsFreePlayers, so big teams (servers full of bots) can afford
+the extra spawns they need.
+============
+*/
+int G_TeamBuildPoints( team_t team )
+{
+  int base, players, extra;
+
+  if( team == TEAM_ALIENS )
+  {
+    base = g_alienBuildPoints.integer;
+    players = level.numAlienClients;
+  }
+  else if( team == TEAM_HUMANS )
+  {
+    base = g_humanBuildPoints.integer;
+    players = level.numHumanClients;
+  }
+  else
+    return 0;
+
+  extra = players - g_buildPointsFreePlayers.integer;
+  if( extra < 0 || g_buildPointsPerPlayer.integer <= 0 )
+    extra = 0;
+
+  return base + extra * g_buildPointsPerPlayer.integer;
+}
+
+/*
+============
 G_CalculateBuildPoints
 
 Recalculate the quantity of building points available to the teams
@@ -1141,7 +1186,7 @@ void G_CalculateBuildPoints( void )
   {
     level.alienBuildPointQueue--;
     level.alienNextQueueTime += G_NextQueueTime( level.alienBuildPointQueue,
-                                               g_alienBuildPoints.integer,
+                                               G_TeamBuildPoints( TEAM_ALIENS ),
                                                g_alienBuildQueueTime.integer );
   }
 
@@ -1150,7 +1195,7 @@ void G_CalculateBuildPoints( void )
   {
     level.humanBuildPointQueue--;
     level.humanNextQueueTime += G_NextQueueTime( level.humanBuildPointQueue,
-                                               g_humanBuildPoints.integer,
+                                               G_TeamBuildPoints( TEAM_HUMANS ),
                                                g_humanBuildQueueTime.integer );
   }
 
@@ -1180,8 +1225,8 @@ void G_CalculateBuildPoints( void )
     level.suddenDeathWarning = TW_IMMINENT;
   }
 
-  level.humanBuildPoints = g_humanBuildPoints.integer - level.humanBuildPointQueue;
-  level.alienBuildPoints = g_alienBuildPoints.integer - level.alienBuildPointQueue;
+  level.humanBuildPoints = G_TeamBuildPoints( TEAM_HUMANS ) - level.humanBuildPointQueue;
+  level.alienBuildPoints = G_TeamBuildPoints( TEAM_ALIENS ) - level.alienBuildPointQueue;
 
   // Reset buildPointZones
   for( i = 0; i < g_humanRepeaterMaxZones.integer; i++ )
@@ -2423,6 +2468,9 @@ void G_RunFrame( int levelTime )
   CheckCvars( );
   // now we are done spawning
   level.spawning = qfalse;
+
+  // bots decide what to do and send their commands
+  G_BotRunFrame( );
 
   //
   // go through all allocated objects

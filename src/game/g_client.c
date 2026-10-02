@@ -1140,7 +1140,7 @@ to the server machine, but qfalse on map changes and tournement
 restarts.
 ============
 */
-const char *ClientConnect( int clientNum, qboolean firstTime )
+const char *ClientConnect( int clientNum, qboolean firstTime, qboolean isBot )
 {
   char      *value;
   char      *userInfoError;
@@ -1160,6 +1160,13 @@ const char *ClientConnect( int clientNum, qboolean firstTime )
   ent->client = client;
   memset( client, 0, sizeof( *client ) );
 
+  // only the engine can flag a client as a bot (never trust userinfo for it)
+  client->pers.isBot = isBot ? qtrue : qfalse;
+  if( isBot )
+    ent->r.svFlags |= SVF_BOT;
+  else
+    ent->r.svFlags &= ~SVF_BOT;
+
   trap_GetUserinfo( clientNum, userinfo, sizeof( userinfo ) );
 
   value = Info_ValueForKey( userinfo, "cl_guid" );
@@ -1170,6 +1177,8 @@ const char *ClientConnect( int clientNum, qboolean firstTime )
   if( !strcmp( value, "localhost" ) )
     client->pers.localClient = qtrue;
   G_AddressParse( value, &client->pers.ip );
+  if( isBot )
+    Q_strncpyz( client->pers.ip.str, "bot", sizeof( client->pers.ip.str ) );
 
   client->pers.admin = G_admin_admin( client->pers.guid );
 
@@ -1189,8 +1198,9 @@ const char *ClientConnect( int clientNum, qboolean firstTime )
     client->pers.guidless = qtrue;
   }
 
-  // check for admin ban
-  if( G_admin_ban_check( ent, reason, sizeof( reason ) ) )
+  // check for admin ban (bots are added by the server operator, so they
+  // skip bans and the server password)
+  if( !isBot && G_admin_ban_check( ent, reason, sizeof( reason ) ) )
   {
     return va( "%s", reason );
   }
@@ -1198,7 +1208,7 @@ const char *ClientConnect( int clientNum, qboolean firstTime )
   // check for a password
   value = Info_ValueForKey( userinfo, "password" );
 
-  if( g_password.string[ 0 ] && Q_stricmp( g_password.string, "none" ) &&
+  if( !isBot && g_password.string[ 0 ] && Q_stricmp( g_password.string, "none" ) &&
       strcmp( g_password.string, value ) != 0 )
     return "Invalid password";
 
@@ -1235,6 +1245,9 @@ const char *ClientConnect( int clientNum, qboolean firstTime )
 
   if( client->pers.admin )
     G_admin_authlog( ent );
+
+  if( isBot )
+    G_BotConnect( clientNum, firstTime );
 
   // count current clients and rank for scoreboard
   CalculateRanks( );
@@ -1308,7 +1321,52 @@ void ClientBegin( int clientNum )
   CalculateRanks( );
 
   // send the client a list of commands that can be used
-  G_ListCommands( ent );
+  if( !client->pers.isBot )
+    G_ListCommands( ent );
+  else
+    G_BotBegin( clientNum );
+}
+
+/*
+===========
+G_SpawnRepeatTime
+
+How long a spawn rests after spawning someone. With g_spawnQueueBoost on,
+the rest gets shorter when more players are waiting than there are spawns
+(down to a quarter, never under 2.5 seconds), so a big team isn't stuck
+in the queue for minutes.
+===========
+*/
+int G_SpawnRepeatTime( team_t team, int base )
+{
+  spawnQueue_t  *sq;
+  int           spawns, queued, t;
+  float         perSpawn;
+
+  if( !g_spawnQueueBoost.integer )
+    return base;
+
+  if( team == TEAM_ALIENS )
+  {
+    sq = &level.alienSpawnQueue;
+    spawns = level.numAlienSpawns;
+  }
+  else
+  {
+    sq = &level.humanSpawnQueue;
+    spawns = level.numHumanSpawns;
+  }
+
+  queued = G_GetSpawnQueueLength( sq );
+  if( spawns <= 0 || queued <= spawns )
+    return base;
+
+  perSpawn = (float)queued / (float)spawns;
+  if( perSpawn > 4.0f )
+    perSpawn = 4.0f;
+
+  t = (int)( base / perSpawn );
+  return t < 2500 ? 2500 : t;
 }
 
 /*
@@ -1390,9 +1448,9 @@ void ClientSpawn( gentity_t *ent, gentity_t *spawn, const vec3_t origin, const v
       G_SetBuildableAnim( spawn, BANIM_SPAWN1, qtrue );
 
       if( spawn->buildableTeam == TEAM_ALIENS )
-        spawn->clientSpawnTime = ALIEN_SPAWN_REPEAT_TIME;
+        spawn->clientSpawnTime = G_SpawnRepeatTime( TEAM_ALIENS, ALIEN_SPAWN_REPEAT_TIME );
       else if( spawn->buildableTeam == TEAM_HUMANS )
-        spawn->clientSpawnTime = HUMAN_SPAWN_REPEAT_TIME;
+        spawn->clientSpawnTime = G_SpawnRepeatTime( TEAM_HUMANS, HUMAN_SPAWN_REPEAT_TIME );
     }
   }
 
@@ -1655,6 +1713,9 @@ void ClientDisconnect( int clientNum )
   if( !ent->client || ent->client->pers.connected == CON_DISCONNECTED )
     return;
 
+  if( ent->client->pers.isBot )
+    G_BotDisconnect( clientNum );
+
   G_LeaveTeam( ent );
   G_namelog_disconnect( ent->client );
   G_Vote( ent, TEAM_NONE, qfalse );
@@ -1685,6 +1746,9 @@ void ClientDisconnect( int clientNum )
       ent->client->ps.persistant[ PERS_SPECSTATE ] = SPECTATOR_NOT;
 
   trap_SetConfigstring( CS_PLAYERS + clientNum, "");
+
+  ent->r.svFlags &= ~SVF_BOT;
+  ent->client->pers.isBot = qfalse;
 
   CalculateRanks( );
 }

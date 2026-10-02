@@ -427,6 +427,21 @@ void SV_DirectConnect( netadr_t from ) {
 		}
 	}
 
+	// the server is full: if bots are occupying slots, make room for the
+	// human by kicking one of them (the game will re-balance its bot fill)
+	if ( !newcl && sv_botsYieldSlots && sv_botsYieldSlots->integer ) {
+		for ( i = sv_maxclients->integer - 1; i >= startIndex; i-- ) {
+			cl = &svs.clients[i];
+			if ( cl->state >= CS_CONNECTED && cl->netchan.remoteAddress.type == NA_BOT ) {
+				SV_DropClient( cl, "was kicked to make room for a player" );
+				if ( cl->state == CS_FREE ) {
+					newcl = cl;
+				}
+				break;
+			}
+		}
+	}
+
 	if ( !newcl ) {
 		if ( NET_IsLocalAddress( from ) ) {
 			Com_Error( ERR_FATAL, "server is full on local connect" );
@@ -469,7 +484,7 @@ gotnewcl:
 	Q_strncpyz( newcl->userinfo, userinfo, sizeof(newcl->userinfo) );
 
 	// get the game a chance to reject this connection or modify the userinfo
-	denied = VM_Call( sv.gvm, GAME_CLIENT_CONNECT, clientNum, true ); // firstTime = true
+	denied = VM_Call( sv.gvm, GAME_CLIENT_CONNECT, clientNum, true, false ); // firstTime = true, isBot = false
 	if ( denied ) {
 		// we can't just use VM_ArgPtr, because that is only valid inside a VM_Call
 		char *str = (char*)VM_ExplicitArgPtr( sv.gvm, denied );
@@ -546,18 +561,21 @@ or crashing -- SV_FinalMessage() will handle that
 void SV_DropClient( client_t *drop, const char *reason ) {
 	int		i;
 	challenge_t	*challenge;
+	const bool isBot = ( drop->netchan.remoteAddress.type == NA_BOT );
 
-	if ( drop->state == CS_ZOMBIE ) {
+	if ( drop->state == CS_ZOMBIE || drop->state == CS_FREE ) {
 		return;		// already dropped
 	}
 
-	// see if we already have a challenge for this ip
-	challenge = &svs.challenges[0];
+	if ( !isBot ) {
+		// see if we already have a challenge for this ip
+		challenge = &svs.challenges[0];
 
-	for (i = 0 ; i < MAX_CHALLENGES ; i++, challenge++) {
-		if ( NET_CompareAdr( drop->netchan.remoteAddress, challenge->adr ) ) {
-			::memset(challenge, 0, sizeof(*challenge));
-			break;
+		for (i = 0 ; i < MAX_CHALLENGES ; i++, challenge++) {
+			if ( NET_CompareAdr( drop->netchan.remoteAddress, challenge->adr ) ) {
+				::memset(challenge, 0, sizeof(*challenge));
+				break;
+			}
 		}
 	}
 
@@ -576,9 +594,14 @@ void SV_DropClient( client_t *drop, const char *reason ) {
 
 	// nuke user info
 	SV_SetUserinfo( drop - svs.clients, "" );
-	
-	Com_DPrintf( "Going to CS_ZOMBIE for %s\n", drop->name );
-	drop->state = CS_ZOMBIE;		// become free in a few seconds
+
+	if ( isBot ) {
+		// bots have no network connection to flush, so they never go zombie
+		SV_BotFreeClient( drop - svs.clients );
+	} else {
+		Com_DPrintf( "Going to CS_ZOMBIE for %s\n", drop->name );
+		drop->state = CS_ZOMBIE;		// become free in a few seconds
+	}
 
 	// if this was the last client on the server, send a heartbeat
 	// to the master so it is known the server is empty
@@ -592,6 +615,146 @@ void SV_DropClient( client_t *drop, const char *reason ) {
 	if ( i == sv_maxclients->integer ) {
 		SV_Heartbeat_f();
 	}
+}
+
+/*
+============================================================
+
+SERVER-SIDE BOT CLIENTS
+
+Bots occupy a normal client_t slot so the game module can treat them
+exactly like players, but their netchan address is NA_BOT: nothing is
+ever transmitted to them, they never time out and they skip the
+connection handshake entirely (the game calls ClientConnect and
+ClientBegin itself right after allocating the slot).
+
+============================================================
+*/
+
+/*
+==================
+SV_IsBot
+==================
+*/
+bool SV_IsBot( const client_t *cl )
+{
+	return cl->netchan.remoteAddress.type == NA_BOT;
+}
+
+/*
+==================
+SV_BotAllocateClient
+
+Reserves a client slot for a bot. Private slots are never used and
+the highest free slot is preferred so humans keep the low numbers.
+Returns -1 when the server is full.
+==================
+*/
+int SV_BotAllocateClient( void )
+{
+	int       i;
+	client_t  *cl;
+
+	for ( i = sv_maxclients->integer - 1; i >= sv_privateClients->integer; i-- ) {
+		if ( svs.clients[i].state == CS_FREE ) {
+			break;
+		}
+	}
+
+	if ( i < sv_privateClients->integer ) {
+		return -1;
+	}
+
+	cl = &svs.clients[i];
+	SV_FreeClient( cl );
+	::memset( cl, 0, sizeof( *cl ) );
+
+	cl->netchan_end_queue = &cl->netchan_start_queue;
+	cl->gentity = SV_GentityNum( i );
+	cl->gentity->s.number = i;
+	cl->gentity->r.svFlags |= SVF_BOT;
+	cl->state = CS_ACTIVE;
+	cl->lastPacketTime = svs.time;
+	cl->lastConnectTime = svs.time;
+	cl->netchan.remoteAddress.type = NA_BOT;
+	cl->rate = 25000;
+	cl->snapshotMsec = 50;
+	cl->deltaMessage = -1;
+	cl->ping = 0;
+
+	Cvar_Set( va( "sv_clAltProto%i", i ), "0" );
+
+	return i;
+}
+
+/*
+==================
+SV_BotFreeClient
+==================
+*/
+void SV_BotFreeClient( int clientNum )
+{
+	client_t *cl;
+
+	if ( clientNum < 0 || clientNum >= sv_maxclients->integer ) {
+		return;
+	}
+
+	cl = &svs.clients[clientNum];
+	cl->state = CS_FREE;
+	cl->name[0] = '\0';
+	cl->name_ansi[0] = '\0';
+	if ( cl->gentity ) {
+		cl->gentity->r.svFlags &= ~SVF_BOT;
+	}
+}
+
+/*
+==================
+SV_BotUserCommand
+
+Stores the movement command a bot will use for its next think.
+The game runs the think itself, so this never re-enters the VM.
+==================
+*/
+void SV_BotUserCommand( int clientNum, const usercmd_t *cmd )
+{
+	client_t *cl;
+
+	if ( clientNum < 0 || clientNum >= sv_maxclients->integer ) {
+		return;
+	}
+
+	cl = &svs.clients[clientNum];
+	if ( !SV_IsBot( cl ) || cl->state != CS_ACTIVE ) {
+		return;
+	}
+
+	cl->lastUsercmd = *cmd;
+	cl->lastPacketTime = svs.time;
+}
+
+/*
+==================
+SV_BotClientCommand
+
+Runs a command string as if the bot had sent it.
+==================
+*/
+void SV_BotClientCommand( int clientNum, const char *command )
+{
+	client_t *cl;
+
+	if ( clientNum < 0 || clientNum >= sv_maxclients->integer || !command ) {
+		return;
+	}
+
+	cl = &svs.clients[clientNum];
+	if ( !SV_IsBot( cl ) || cl->state != CS_ACTIVE ) {
+		return;
+	}
+
+	SV_ExecuteClientCommand( cl, command, true );
 }
 
 extern char alternateInfos[2][2][BIG_INFO_STRING];

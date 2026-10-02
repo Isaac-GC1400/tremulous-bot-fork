@@ -168,7 +168,7 @@ qboolean G_FindPower( gentity_t *self, qboolean searchUnspawned )
         // Only power as much BP as the reactor can hold
         if( self->s.modelindex != BA_NONE )
         {
-          int buildPoints = g_humanBuildPoints.integer;
+          int buildPoints = G_TeamBuildPoints( TEAM_HUMANS );
 
           // Scan the buildables in the reactor zone
           for( j = MAX_CLIENTS, ent2 = g_entities + j; j < level.num_entities; j++, ent2++ )
@@ -2576,7 +2576,7 @@ void G_QueueBuildPoints( gentity_t *self )
         {
           case BA_H_REACTOR:
             nqt = G_NextQueueTime( level.humanBuildPointQueue,
-                                   g_humanBuildPoints.integer,
+                                   G_TeamBuildPoints( TEAM_HUMANS ),
                                    g_humanBuildQueueTime.integer );
             if( !level.humanBuildPointQueue ||
                 level.time + nqt < level.humanNextQueueTime )

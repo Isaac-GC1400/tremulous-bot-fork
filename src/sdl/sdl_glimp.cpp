@@ -156,7 +156,8 @@ static void GLimp_DetectAvailableModes(void)
 		return;
 	}
 
-	modes = (SDL_Rect*)SDL_calloc( (size_t)numSDLModes, sizeof( SDL_Rect ) );
+	// one extra slot for the "automatic" mode added after the loop
+	modes = (SDL_Rect*)SDL_calloc( (size_t)numSDLModes + 1, sizeof( SDL_Rect ) );
 	if ( !modes )
 	{
 		ri.Error( ERR_FATAL, "Out of memory" );

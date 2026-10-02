@@ -40,6 +40,7 @@ along with Tremulous; if not, see <https://www.gnu.org/licenses/>
 // entityShared_t->singleClient: low-order bits (0..31)
 // entityShared_t->hack.generic1: high-order bits (32..63)
 
+#define SVF_BOT 0x00000008  // set on server-side bot clients (see G_BOT_ALLOCATE_CLIENT)
 #define SVF_BROADCAST 0x00000020  // send to all connected clients
 #define SVF_PORTAL 0x00000040  // merge a second pvs at origin2 into snapshots
 
@@ -229,7 +230,24 @@ typedef enum {
 
     G_ADDCOMMAND,
     G_REMOVECOMMAND,
-    G_FS_GETFILTEREDFILES
+    G_FS_GETFILTEREDFILES,
+
+    // server-side bots (the engine advertises these with the
+    // read-only cvar "sv_botSupport" so the game never calls them on an
+    // engine that lacks them)
+    G_BOT_ALLOCATE_CLIENT,  // int ( void );
+    // reserve a client slot for a bot; returns the client number or -1
+
+    G_BOT_FREE_CLIENT,  // ( int clientNum );
+    // release a slot reserved by G_BOT_ALLOCATE_CLIENT (normally done
+    // through trap_DropClient instead)
+
+    G_BOT_USER_COMMAND,  // ( int clientNum, usercmd_t *cmd );
+    // store the bot's movement command; G_GET_USERCMD returns it
+
+    G_BOT_CLIENT_COMMAND  // ( int clientNum, const char *command );
+    // execute a command string as if the bot had typed it
+    // (e.g. "team aliens", "class level0", "buy shotgun")
 } gameImport_t;
 
 //
@@ -243,7 +261,7 @@ typedef enum {
 
     GAME_SHUTDOWN,  // (void);
 
-    GAME_CLIENT_CONNECT,  // ( int clientNum, qboolean firstTime );
+    GAME_CLIENT_CONNECT,  // ( int clientNum, qboolean firstTime, qboolean isBot );
     // return NULL if the client is allowed to connect, otherwise return
     // a text string with the reason for denial
 

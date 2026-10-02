@@ -322,8 +322,10 @@ If the line width has changed, reformat the buffer.
 void Con_CheckResize (void)
 {
 	int			i, j, width, oldwidth, oldtotallines, numlines, numchars;
-	char		tbuf[CON_TEXTSIZE];
-	vec4_t	tcbuf[CON_TEXTSIZE];
+	// static: 2.7 MB, more than the whole 1 MB stack Windows gives the
+	// main thread (the client crashed silently at start-up)
+	static char		tbuf[CON_TEXTSIZE];
+	static vec4_t	tcbuf[CON_TEXTSIZE];
 
 	if (cls.glconfig.vidWidth) {
 		width = cls.glconfig.vidWidth / SMALLCHAR_WIDTH -2;

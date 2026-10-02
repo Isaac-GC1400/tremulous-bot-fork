@@ -297,3 +297,25 @@ int trap_FS_GetFilteredFiles( const char *path, const char *extension, const cha
 {
   return syscall( G_FS_GETFILTEREDFILES, path, extension, filter, listbuf, bufsize );
 }
+
+// server-side bots
+
+int trap_BotAllocateClient( void )
+{
+  return syscall( G_BOT_ALLOCATE_CLIENT );
+}
+
+void trap_BotFreeClient( int clientNum )
+{
+  syscall( G_BOT_FREE_CLIENT, clientNum );
+}
+
+void trap_BotUserCommand( int clientNum, usercmd_t *ucmd )
+{
+  syscall( G_BOT_USER_COMMAND, clientNum, ucmd );
+}
+
+void trap_BotClientCommand( int clientNum, const char *command )
+{
+  syscall( G_BOT_CLIENT_COMMAND, clientNum, command );
+}
