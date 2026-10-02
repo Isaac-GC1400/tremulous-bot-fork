@@ -342,6 +342,8 @@ typedef struct
 
   // level.time when teamoverlay info changed so we know to tell other players
   int                 infoChangeTime;
+
+  qboolean            isBot;              // server-side bot (see g_bot.c)
 } clientPersistant_t;
 
 #define MAX_UNLAGGED_MARKERS 256
@@ -1036,7 +1038,7 @@ int  G_TimeTilSuddenDeath( void );
 //
 // g_client.c
 //
-const char *ClientConnect( int clientNum, qboolean firstTime );
+const char *ClientConnect( int clientNum, qboolean firstTime, qboolean isBot );
 char *ClientUserinfoChanged( int clientNum, qboolean forceName );
 void ClientDisconnect( int clientNum );
 void ClientBegin( int clientNum );
@@ -1053,6 +1055,32 @@ void G_UnlaggedOff( void );
 void ClientThink( int clientNum );
 void ClientEndFrame( gentity_t *ent );
 void G_RunClient( gentity_t *ent );
+
+//
+// g_bot.c
+//
+void      G_BotInit( void );
+void      G_BotShutdown( void );
+void      G_BotRunFrame( void );
+void      G_BotConnect( int clientNum, qboolean firstTime );
+void      G_BotBegin( int clientNum );
+void      G_BotDisconnect( int clientNum );
+int       G_AddBot( const char *name, team_t team, int skill, qboolean announce );
+void      G_RemoveBot( int clientNum, const char *reason );
+void      Svcmd_AddBot_f( void );
+void      Svcmd_RemoveBot_f( void );
+void      Svcmd_KickBots_f( void );
+void      Svcmd_BotList_f( void );
+void      Svcmd_BotSkill_f( void );
+void      Svcmd_BotTeam_f( void );
+void      Svcmd_BotFill_f( void );
+void      Svcmd_BotCmd_f( void );
+void      Svcmd_BotDebug_f( void );
+void      Svcmd_BotGoto_f( void );
+void      Svcmd_BotPlan_f( void );
+void      Svcmd_NavGen_f( void );
+void      Svcmd_NavInfo_f( void );
+void      Svcmd_NavShow_f( void );
 
 //
 // g_team.c
@@ -1255,3 +1283,8 @@ void      trap_SnapVector( float *v );
 void      trap_AddCommand( const char *cmdName );
 void      trap_RemoveCommand( const char *cmdName );
 int       trap_FS_GetFilteredFiles( const char *path, const char *extension, const char *filter, char *listbuf, int bufsize );
+
+int       trap_BotAllocateClient( void );
+void      trap_BotFreeClient( int clientNum );
+void      trap_BotUserCommand( int clientNum, usercmd_t *ucmd );
+void      trap_BotClientCommand( int clientNum, const char *command );

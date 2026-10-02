@@ -319,7 +319,7 @@ Q_EXPORT intptr_t vmMain( int command, int arg0, int arg1, int arg2 )
       return 0;
 
     case GAME_CLIENT_CONNECT:
-      return (intptr_t)ClientConnect( arg0, arg1 );
+      return (intptr_t)ClientConnect( arg0, arg1, arg2 );
 
     case GAME_CLIENT_THINK:
       ClientThink( arg0 );
@@ -694,6 +694,9 @@ void G_InitGame( int levelTime, int randomSeed, int restart )
     level.humanTeamLocked = qtrue;
     trap_Cvar_Set( "g_lockTeamsAtStart", "0" );
   }
+
+  // server-side bots: cvars and the navigation graph for this map
+  G_BotInit( );
 }
 
 /*
@@ -735,6 +738,8 @@ void G_ShutdownGame( int restart )
     trap_FS_FCloseFile( level.logFile );
     level.logFile = 0;
   }
+
+  G_BotShutdown( );
 
   // write all the client session data so we can get it back
   G_WriteSessionData( );
@@ -2423,6 +2428,9 @@ void G_RunFrame( int levelTime )
   CheckCvars( );
   // now we are done spawning
   level.spawning = qfalse;
+
+  // bots decide what to do and send their commands
+  G_BotRunFrame( );
 
   //
   // go through all allocated objects

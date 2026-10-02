@@ -447,6 +447,18 @@ intptr_t SV_GameSystemCalls( intptr_t *args ) {
             Cmd_RemoveCommand( (const char*)VMA(1) );
             return 0;
 
+        case G_BOT_ALLOCATE_CLIENT:
+            return SV_BotAllocateClient( );
+        case G_BOT_FREE_CLIENT:
+            SV_BotFreeClient( args[1] );
+            return 0;
+        case G_BOT_USER_COMMAND:
+            SV_BotUserCommand( args[1], (const usercmd_t*)VMA(2) );
+            return 0;
+        case G_BOT_CLIENT_COMMAND:
+            SV_BotClientCommand( args[1], (const char*)VMA(2) );
+            return 0;
+
         case TRAP_MEMSET:
             ::memset( VMA(1), args[2], args[3] );
             return 0;

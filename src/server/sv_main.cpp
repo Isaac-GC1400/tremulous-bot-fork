@@ -60,6 +60,7 @@ cvar_t	*sv_minPing;
 cvar_t	*sv_maxPing;
 cvar_t	*sv_pure;
 cvar_t	*sv_lanForceRate; // dedicated 1 (LAN) server forces local client rates to 99999 (bug #491)
+cvar_t	*sv_botsYieldSlots; // kick a bot when a human connects to a full server
 cvar_t	*sv_banFile;
 
 cvar_t  *sv_rsaAuth;
@@ -154,6 +155,10 @@ void SV_AddServerCommand( client_t *client, const char *cmd ) {
 
 	// do not send commands until the gamestate has been sent
 	if( client->state < CS_PRIMED )
+		return;
+
+	// bots never acknowledge reliable commands, so don't queue any
+	if( client->netchan.remoteAddress.type == NA_BOT )
 		return;
 
 	client->reliableSequence++;
@@ -1048,6 +1053,12 @@ static void SV_CalcPings( void ) {
 			cl->ping = 999;
 			continue;
 		}
+		if ( cl->netchan.remoteAddress.type == NA_BOT ) {
+			cl->ping = 0;
+			ps = SV_GameClientNum( i );
+			ps->ping = 0;
+			continue;
+		}
 
 		total = 0;
 		count = 0;
@@ -1100,6 +1111,13 @@ static void SV_CheckTimeouts( void ) {
 		// message times may be wrong across a changelevel
 		if (cl->lastPacketTime > svs.time) {
 			cl->lastPacketTime = svs.time;
+		}
+
+		// bots have no connection that could time out
+		if ( cl->netchan.remoteAddress.type == NA_BOT ) {
+			cl->lastPacketTime = svs.time;
+			cl->timeoutCount = 0;
+			continue;
 		}
 
 		if (cl->state == CS_ZOMBIE

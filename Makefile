@@ -2569,6 +2569,10 @@ GOBJ_ = \
   $(B)/$(BASEGAME)/game/g_weapondrop.o \
   $(B)/$(BASEGAME)/game/g_admin.o \
   $(B)/$(BASEGAME)/game/g_namelog.o \
+  $(B)/$(BASEGAME)/game/g_bot.o \
+  $(B)/$(BASEGAME)/game/g_botnav.o \
+  $(B)/$(BASEGAME)/game/g_botai.o \
+  $(B)/$(BASEGAME)/game/g_botbuild.o \
   \
   $(B)/$(BASEGAME)/qcommon/q_math.o \
   $(B)/$(BASEGAME)/qcommon/q_shared.o

@@ -682,15 +682,33 @@ void SV_SpawnServer(char *server)
         if (svs.clients[i].state >= CS_CONNECTED)
         {
             char *denied;
+            bool isBot = (svs.clients[i].netchan.remoteAddress.type == NA_BOT);
 
             // connect the client again
-            denied =
-                (char *)VM_ExplicitArgPtr(sv.gvm, VM_Call(sv.gvm, GAME_CLIENT_CONNECT, i, false));  // firstTime = false
+            denied = (char *)VM_ExplicitArgPtr(
+                sv.gvm, VM_Call(sv.gvm, GAME_CLIENT_CONNECT, i, false, isBot));  // firstTime = false
             if (denied)
             {
                 // this generally shouldn't happen, because the client
                 // was connected before the level change
                 SV_DropClient(&svs.clients[i], denied);
+            }
+            else if (isBot)
+            {
+                // bots have no gamestate to download: put them straight
+                // back into the world
+                client_t *client = &svs.clients[i];
+                sharedEntity_t *ent = SV_GentityNum(i);
+
+                client->state = CS_ACTIVE;
+                ent->s.number = i;
+                ent->r.svFlags |= SVF_BOT;
+                client->gentity = ent;
+                client->deltaMessage = -1;
+                client->lastSnapshotTime = 0;
+                ::memset(&client->lastUsercmd, 0, sizeof(client->lastUsercmd));
+
+                VM_Call(sv.gvm, GAME_CLIENT_BEGIN, i);
             }
             else
             {
@@ -916,6 +934,11 @@ void SV_Init(void)
     sv_killserver = Cvar_Get("sv_killserver", "0", 0);
     sv_mapChecksum = Cvar_Get("sv_mapChecksum", "", CVAR_ROM);
     sv_lanForceRate = Cvar_Get("sv_lanForceRate", "1", CVAR_ARCHIVE);
+
+    // server-side bot support: the game checks sv_botSupport before using
+    // the bot system calls, so new game modules still run on old engines
+    Cvar_Get("sv_botSupport", "1", CVAR_ROM);
+    sv_botsYieldSlots = Cvar_Get("sv_botsYieldSlots", "1", CVAR_ARCHIVE);
     sv_rsaAuth = Cvar_Get("sv_rsaAuth", "1", CVAR_INIT | CVAR_PROTECTED);
 }
 
@@ -939,7 +962,7 @@ void SV_FinalMessage(const char *message)
         int i;
         for (i = 0, cl = svs.clients; i < sv_maxclients->integer; i++, cl++)
         {
-            if (cl->state >= CS_CONNECTED)
+            if (cl->state >= CS_CONNECTED && cl->netchan.remoteAddress.type != NA_BOT)
             {
                 // don't send a disconnect to a local client
                 if (cl->netchan.remoteAddress.type != NA_LOOPBACK)

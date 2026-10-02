@@ -350,6 +350,7 @@ extern cvar_t *sv_minPing;
 extern cvar_t *sv_maxPing;
 extern cvar_t *sv_pure;
 extern cvar_t *sv_lanForceRate;
+extern cvar_t *sv_botsYieldSlots;
 extern cvar_t *sv_banFile;
 
 extern	cvar_t *sv_protect;
@@ -434,6 +435,13 @@ void SV_DropClient(client_t *drop, const char *reason);
 
 void SV_ExecuteClientCommand(client_t *cl, const char *s, bool clientOK);
 void SV_ClientThink(client_t *cl, usercmd_t *cmd);
+
+// server-side bots
+bool SV_IsBot(const client_t *cl);
+int SV_BotAllocateClient(void);
+void SV_BotFreeClient(int clientNum);
+void SV_BotUserCommand(int clientNum, const usercmd_t *cmd);
+void SV_BotClientCommand(int clientNum, const char *command);
 
 int SV_WriteDownloadToClient(client_t *cl, msg_t *msg);
 int SV_SendDownloadMessages(void);
