@@ -752,6 +752,10 @@ void      G_CensorString( char *out, const char *in, int len, gentity_t *ent );
 void G_Physics( gentity_t *ent, int msec );
 
 //
+// build points and spawn timing that scale with team size
+int               G_TeamBuildPoints( team_t team );        // g_main.c
+int               G_SpawnRepeatTime( team_t team, int base ); // g_client.c
+
 // g_buildable.c
 //
 
@@ -1174,6 +1178,9 @@ extern  vmCvar_t  pmove_msec;
 extern  vmCvar_t  g_alienBuildPoints;
 extern  vmCvar_t  g_alienBuildQueueTime;
 extern  vmCvar_t  g_humanBuildPoints;
+extern  vmCvar_t  g_buildPointsPerPlayer;
+extern  vmCvar_t  g_buildPointsFreePlayers;
+extern  vmCvar_t  g_spawnQueueBoost;
 extern  vmCvar_t  g_humanBuildQueueTime;
 extern  vmCvar_t  g_humanRepeaterBuildPoints;
 extern  vmCvar_t  g_humanRepeaterBuildQueueTime;

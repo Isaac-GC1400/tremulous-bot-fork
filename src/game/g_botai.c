@@ -328,21 +328,74 @@ static void Bot_TurnToward( bot_t *bot, const vec3_t desired, float speedScale )
   bot->viewAngles[ ROLL ] = 0.0f;
 }
 
-// aim at a world point with skill based error; sets bot->aimLocked when
-// the crosshair is within 'tolerance' degrees of the point
+// remember where the enemy is, and return how far it has moved since
+// 'delay' ms ago: aiming at the current point minus that is aiming where
+// the enemy was, which is what a human's reaction lag looks like
+static void Bot_AimLag( bot_t *bot, vec3_t lag )
+{
+  gentity_t *enemy;
+  int       i, k, delay = G_BotAimDelay( bot ), want;
+
+  VectorClear( lag );
+
+  if( bot->enemy < 0 || bot->enemy >= MAX_GENTITIES )
+  {
+    bot->aimHistCount = 0;
+    return;
+  }
+
+  enemy = &g_entities[ bot->enemy ];
+  if( bot->aimHistEnt != bot->enemy )
+  {
+    bot->aimHistEnt = bot->enemy;
+    bot->aimHistCount = 0;
+  }
+
+  // one sample per server frame
+  if( !bot->aimHistCount ||
+      bot->aimHistTime[ ( bot->aimHistHead + BOT_AIM_HISTORY - 1 ) % BOT_AIM_HISTORY ] != level.time )
+  {
+    VectorCopy( enemy->r.currentOrigin, bot->aimHist[ bot->aimHistHead ] );
+    bot->aimHistTime[ bot->aimHistHead ] = level.time;
+    bot->aimHistHead = ( bot->aimHistHead + 1 ) % BOT_AIM_HISTORY;
+    if( bot->aimHistCount < BOT_AIM_HISTORY )
+      bot->aimHistCount++;
+  }
+
+  if( delay <= 0 )
+    return;
+
+  // newest sample at least 'delay' old (or the oldest we have)
+  want = level.time - delay;
+  for( i = 1; i <= bot->aimHistCount; i++ )
+  {
+    k = ( bot->aimHistHead + BOT_AIM_HISTORY - i ) % BOT_AIM_HISTORY;
+    if( bot->aimHistTime[ k ] <= want || i == bot->aimHistCount )
+    {
+      VectorSubtract( enemy->r.currentOrigin, bot->aimHist[ k ], lag );
+      return;
+    }
+  }
+}
+
+// aim at a world point with skill based error (the aim cone) and lag (the
+// aim delay); sets bot->aimLocked when the crosshair is within 'tolerance'
+// degrees of where the bot thinks the target is
 static void Bot_AimAt( bot_t *bot, const vec3_t point, float tolerance )
 {
   gentity_t *ent = Bot_Ent( bot );
-  vec3_t    eye, dir, desired;
+  vec3_t    eye, dir, desired, lag, lagged;
   float     err, dy, dp;
 
   Bot_Eye( ent, eye );
-  VectorSubtract( point, eye, dir );
+  Bot_AimLag( bot, lag );
+  VectorSubtract( point, lag, lagged );
+  VectorSubtract( lagged, eye, dir );
   vectoangles( dir, desired );
 
   if( level.time >= bot->nextAimErrorTime )
   {
-    err = ( BOT_MAX_SKILL + 1 - bot->skill ) * 0.55f * bot_aimSkillScale.value;
+    err = G_BotAimCone( bot );
     bot->aimError[ YAW ] = G_BotCrandom( ) * err;
     bot->aimError[ PITCH ] = G_BotCrandom( ) * err * 0.6f;
     bot->nextAimErrorTime = level.time + 250 + (int)( G_BotRandom( ) * 450.0f );
@@ -899,7 +952,7 @@ static void Bot_HumanCombat( bot_t *bot, gentity_t *enemy, qboolean visible, con
   tol = Bot_AimTolerance( bot, enemy );
   Bot_AimAt( bot, aim, tol );
 
-  canFire = bot->aimLocked && level.time - bot->enemyFirstSeen > 600 - bot->skill * 45;
+  canFire = bot->aimLocked && level.time - bot->enemyFirstSeen > G_BotAimDelay( bot ) + 150;
 
   // ---- fire
   switch( ps->weapon )
@@ -964,7 +1017,7 @@ static void Bot_AlienCombat( bot_t *bot, gentity_t *enemy, qboolean visible, con
   toward = vectoyaw( dir );
   heightDiff = seen[ 2 ] - myPos[ 2 ];
 
-  canAct = visible && level.time - bot->enemyFirstSeen > 550 - bot->skill * 40;
+  canAct = visible && level.time - bot->enemyFirstSeen > G_BotAimDelay( bot ) + 120;
 
   // ---- grangers mostly run, but bite back when cornered
   if( cls == PCL_ALIEN_BUILDER0 || cls == PCL_ALIEN_BUILDER0_UPG )
@@ -1452,6 +1505,15 @@ static void Bot_SetGoal( bot_t *bot, botGoal_t goal, int entNum, const vec3_t po
   {
     bot->goalSetTime = level.time;
     G_BotDebug( bot, "goal %d ent %d", goal, entNum );
+
+    // heading out from our base to hit theirs: a battle cry on the way
+    if( goal == BGOAL_ATTACKBASE && bot->goal != BGOAL_ATTACKBASE )
+    {
+      gentity_t *hq = BotTeam_HQ( Bot_Team( bot ) );
+
+      if( !hq || Distance( hq->r.currentOrigin, Bot_Ent( bot )->r.currentOrigin ) < 1500.0f )
+        G_BotEmote( bot, 0.6f, 300 + (int)( G_BotRandom( ) * 900.0f ) );
+    }
   }
 
   bot->goal = goal;
@@ -1860,11 +1922,45 @@ void BotAI_Begin( bot_t *bot )
   BotMove_Reset( bot );
 }
 
+// emotes: after a kill now and then, and when a queued one is due (not
+// in the middle of a fight)
+static void Bot_EmoteFrame( bot_t *bot )
+{
+  gentity_t *ent = Bot_Ent( bot );
+  int       score = ent->client->ps.persistant[ PERS_SCORE ];
+  qboolean  busy;
+
+  if( score > bot->lastScore && bot->enemy < 0 )
+    G_BotEmote( bot, 0.35f, 300 + (int)( G_BotRandom( ) * 500.0f ) );
+  else if( score > bot->lastScore )
+    G_BotEmote( bot, 0.25f, 800 );
+  bot->lastScore = score;
+
+  if( !bot->emoteAt || level.time < bot->emoteAt )
+    return;
+
+  busy = bot->enemy >= 0 && level.time - bot->enemySeenTime < 600 &&
+         Distance( bot->enemyLastPos, ent->r.currentOrigin ) < 500.0f;
+
+  if( busy )
+  {
+    if( level.time - bot->emoteAt > 3000 )
+      bot->emoteAt = 0;   // never mind
+    return;
+  }
+
+  bot->buttons |= BUTTON_GESTURE;
+  bot->emoteAt = 0;
+  G_BotDebug( bot, "emote" );
+}
+
 void BotAI_Spawned( bot_t *bot )
 {
   gentity_t *ent = Bot_Ent( bot );
 
   bot->spawnedAt = level.time;
+  bot->emoteAt = 0;
+  bot->lastScore = ent->client->ps.persistant[ PERS_SCORE ];
   bot->enemy = -1;
   bot->goal = BGOAL_NONE;
   bot->goalEnt = -1;
@@ -1976,6 +2072,8 @@ void BotAI_Think( bot_t *bot )
   if( Bot_Team( bot ) == TEAM_HUMANS && bot->wantMove && bot->enemy < 0 &&
       ps->stats[ STAT_STAMINA ] > 500 && bot->goal != BGOAL_DEFEND )
     bot->buttons |= BUTTON_SPRINT;
+
+  Bot_EmoteFrame( bot );
 
   if( level.time - bot->spawnedAt < 400 )
   {

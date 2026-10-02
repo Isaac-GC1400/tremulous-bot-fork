@@ -1329,6 +1329,48 @@ void ClientBegin( int clientNum )
 
 /*
 ===========
+G_SpawnRepeatTime
+
+How long a spawn rests after spawning someone. With g_spawnQueueBoost on,
+the rest gets shorter when more players are waiting than there are spawns
+(down to a quarter, never under 2.5 seconds), so a big team isn't stuck
+in the queue for minutes.
+===========
+*/
+int G_SpawnRepeatTime( team_t team, int base )
+{
+  spawnQueue_t  *sq;
+  int           spawns, queued, t;
+  float         perSpawn;
+
+  if( !g_spawnQueueBoost.integer )
+    return base;
+
+  if( team == TEAM_ALIENS )
+  {
+    sq = &level.alienSpawnQueue;
+    spawns = level.numAlienSpawns;
+  }
+  else
+  {
+    sq = &level.humanSpawnQueue;
+    spawns = level.numHumanSpawns;
+  }
+
+  queued = G_GetSpawnQueueLength( sq );
+  if( spawns <= 0 || queued <= spawns )
+    return base;
+
+  perSpawn = (float)queued / (float)spawns;
+  if( perSpawn > 4.0f )
+    perSpawn = 4.0f;
+
+  t = (int)( base / perSpawn );
+  return t < 2500 ? 2500 : t;
+}
+
+/*
+===========
 ClientSpawn
 
 Called every time a client is placed fresh in the world:
@@ -1406,9 +1448,9 @@ void ClientSpawn( gentity_t *ent, gentity_t *spawn, const vec3_t origin, const v
       G_SetBuildableAnim( spawn, BANIM_SPAWN1, qtrue );
 
       if( spawn->buildableTeam == TEAM_ALIENS )
-        spawn->clientSpawnTime = ALIEN_SPAWN_REPEAT_TIME;
+        spawn->clientSpawnTime = G_SpawnRepeatTime( TEAM_ALIENS, ALIEN_SPAWN_REPEAT_TIME );
       else if( spawn->buildableTeam == TEAM_HUMANS )
-        spawn->clientSpawnTime = HUMAN_SPAWN_REPEAT_TIME;
+        spawn->clientSpawnTime = G_SpawnRepeatTime( TEAM_HUMANS, HUMAN_SPAWN_REPEAT_TIME );
     }
   }
 

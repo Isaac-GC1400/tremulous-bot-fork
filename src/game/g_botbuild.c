@@ -1013,12 +1013,12 @@ static qboolean Bot_SpotOccupied( team_t team, const vec3_t spot, float radius )
   return qfalse;
 }
 
-static qboolean Bot_PickUtilitySpot( bot_t *bot, team_t team, const vec3_t hqPos, vec3_t out )
+static qboolean Bot_PickUtilitySpotIn( bot_t *bot, team_t team, const vec3_t hqPos, vec3_t out,
+                                       float maxR )
 {
   botBasePlan_t *plan = Bot_BasePlan( team );
   int           tries, n, k;
   qboolean      ok;
-  float         maxR = ( team == TEAM_ALIENS ) ? 420.0f : 480.0f;
   vec3_t        p;
 
   planDist = planDists[ team ];
@@ -1064,6 +1064,18 @@ static qboolean Bot_PickUtilitySpot( bot_t *bot, team_t team, const vec3_t hqPos
   }
 
   return qfalse;
+}
+
+// a free spot near the HQ; when the base is full, a bit further out
+// (still inside reactor power / overmind creep range)
+static qboolean Bot_PickUtilitySpot( bot_t *bot, team_t team, const vec3_t hqPos, vec3_t out )
+{
+  float maxR = ( team == TEAM_ALIENS ) ? 420.0f : 480.0f;
+
+  if( Bot_PickUtilitySpotIn( bot, team, hqPos, out, maxR ) )
+    return qtrue;
+
+  return Bot_PickUtilitySpotIn( bot, team, hqPos, out, maxR * 1.6f );
 }
 
 static int Bot_PickDefenceSpot( team_t team, vec3_t out )
@@ -1119,6 +1131,35 @@ static qboolean Bot_PlanNextBuild( bot_t *bot )
   }
 
   VectorCopy( hq->r.currentOrigin, hqPos );
+
+  // spawns first when the team has outgrown them: about one per three
+  // players, built before anything else while people are queueing
+  {
+    buildable_t   spawnType = ( team == TEAM_ALIENS ) ? BA_A_SPAWN : BA_H_SPAWN;
+    int           players = ( team == TEAM_ALIENS ) ? level.numAlienClients : level.numHumanClients;
+    int           queued = G_GetSpawnQueueLength( team == TEAM_ALIENS ?
+                             &level.alienSpawnQueue : &level.humanSpawnQueue );
+    int           spawns = BotTeam_CountBuildable( team, spawnType, qfalse );
+    int           want = ( players + 2 ) / 3;
+
+    if( want < 2 )
+      want = 2;
+    if( want > 12 )
+      want = 12;
+
+    if( spawns < want && ( queued > spawns || spawns < 2 ) &&
+        Bot_BuildAllowed( team, spawnType ) && Bot_EnoughBP( team, spawnType, hqPos ) &&
+        Bot_PickUtilitySpot( bot, team, hqPos, spot ) )
+    {
+      bot->buildType = spawnType;
+      VectorCopy( spot, bot->buildSpot );
+      bot->buildTries = 0;
+      bot->buildPhase = 0;
+      G_BotDebug( bot, "plan: %s at %s (%d queued, %d spawns, want %d)",
+                  BG_Buildable( spawnType )->name, vtos( spot ), queued, spawns, want );
+      return qtrue;
+    }
+  }
 
   for( i = 0; order[ i ].b != BA_NONE; i++ )
   {
@@ -1248,7 +1289,16 @@ qboolean BotBuild_WantBuilderRole( bot_t *bot )
   if( team == TEAM_ALIENS && !BG_ClassIsAllowed( PCL_ALIEN_BUILDER0 ) )
     return qfalse;
 
-  return BotTeam_Builders( team, bot->clientNum ) < bot_buildersPerTeam.integer;
+  // a second builder once a team gets big
+  {
+    int want = bot_buildersPerTeam.integer;
+    int players = ( team == TEAM_ALIENS ) ? level.numAlienClients : level.numHumanClients;
+
+    if( players > 10 )
+      want++;
+
+    return BotTeam_Builders( team, bot->clientNum ) < want;
+  }
 }
 
 /*

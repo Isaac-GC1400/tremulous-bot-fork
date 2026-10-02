@@ -271,6 +271,16 @@ typedef struct bot_s
   vec3_t          viewAngles;       // what we are looking at right now
   vec3_t          aimError;         // current aim offset (degrees)
   int             nextAimErrorTime;
+  float           aimFactor;        // this bot's own spread around its skill (0.85 - 1.15)
+  // where the current enemy was recently, for aim delay
+#define BOT_AIM_HISTORY 32
+  vec3_t          aimHist[ BOT_AIM_HISTORY ];
+  int             aimHistTime[ BOT_AIM_HISTORY ];
+  int             aimHistHead, aimHistCount, aimHistEnt;
+  // emotes
+  int             emoteAt;          // press the gesture button at this time
+  int             nextEmote;
+  int             lastScore;
   qboolean        aimLocked;        // crosshair is on target
 
   // navigation
@@ -359,6 +369,15 @@ extern vmCvar_t bot_navAutoGenerate;
 extern vmCvar_t bot_navGenBudget;
 extern vmCvar_t bot_namePrefix;
 extern vmCvar_t bot_aimSkillScale;
+extern vmCvar_t bot_aimConeMax;
+extern vmCvar_t bot_aimConeMin;
+extern vmCvar_t bot_aimDelayMax;
+extern vmCvar_t bot_aimDelayMin;
+extern vmCvar_t bot_emote;
+float     G_BotAimCone( const bot_t *bot );
+int       G_BotAimDelay( const bot_t *bot );
+int       G_BotPickSkill( const char *s, int fallback );
+void      G_BotEmote( bot_t *bot, float chance, int delay );
 extern vmCvar_t bot_evolve;
 extern vmCvar_t bot_buy;
 

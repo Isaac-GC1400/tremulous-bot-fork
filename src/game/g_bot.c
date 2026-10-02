@@ -49,6 +49,11 @@ vmCvar_t  bot_navAutoGenerate;
 vmCvar_t  bot_navGenBudget;
 vmCvar_t  bot_namePrefix;
 vmCvar_t  bot_aimSkillScale;
+vmCvar_t  bot_aimConeMax;
+vmCvar_t  bot_aimConeMin;
+vmCvar_t  bot_aimDelayMax;
+vmCvar_t  bot_aimDelayMin;
+vmCvar_t  bot_emote;
 vmCvar_t  bot_evolve;
 vmCvar_t  bot_buy;
 
@@ -62,7 +67,7 @@ typedef struct
 
 static botCvarTable_t botCvarTable[ ] =
 {
-  { &bot_skill, "bot_skill", "5", CVAR_ARCHIVE },
+  { &bot_skill, "bot_skill", "5", CVAR_ARCHIVE },   // a skill, or a range like "3-7"
   { &bot_debug, "bot_debug", "0", 0 },
   { &bot_build, "bot_build", "1", CVAR_ARCHIVE },
   { &bot_buildersPerTeam, "bot_buildersPerTeam", "1", CVAR_ARCHIVE },
@@ -76,6 +81,11 @@ static botCvarTable_t botCvarTable[ ] =
   { &bot_navGenBudget, "bot_navGenBudget", "40", CVAR_ARCHIVE },
   { &bot_namePrefix, "bot_namePrefix", "[BOT]", CVAR_ARCHIVE },
   { &bot_aimSkillScale, "bot_aimSkillScale", "1.0", CVAR_ARCHIVE },
+  { &bot_aimConeMax, "bot_aimConeMax", "6", CVAR_ARCHIVE },      // degrees, skill 1
+  { &bot_aimConeMin, "bot_aimConeMin", "0.5", CVAR_ARCHIVE },    // degrees, skill 10
+  { &bot_aimDelayMax, "bot_aimDelayMax", "400", CVAR_ARCHIVE },  // ms, skill 1
+  { &bot_aimDelayMin, "bot_aimDelayMin", "40", CVAR_ARCHIVE },   // ms, skill 10
+  { &bot_emote, "bot_emote", "1", CVAR_ARCHIVE },
   { &bot_evolve, "bot_evolve", "1", CVAR_ARCHIVE },
   { &bot_buy, "bot_buy", "1", CVAR_ARCHIVE }
 };
@@ -295,6 +305,100 @@ CONNECTING / DISCONNECTING
 ===========================================================================
 */
 
+/*
+==================
+Difficulty
+
+Every bot has a skill from 1 to 10. Skill sets its aim cone (how far off
+target its aim wanders, in degrees) and its aim delay (how far behind a
+moving target its aim lags, which is also its reaction time before the
+first shot). Both are interpolated between the bot_aim*Max (skill 1) and
+bot_aim*Min (skill 10) cvars, and each bot gets its own +-15% spread so
+two bots of the same skill don't play identically.
+==================
+*/
+static float G_BotSkillLerp( const bot_t *bot, float atMin, float atMax )
+{
+  float f = ( bot->skill - 1 ) / (float)( BOT_MAX_SKILL - 1 );
+
+  if( f < 0.0f )
+    f = 0.0f;
+  if( f > 1.0f )
+    f = 1.0f;
+
+  return ( atMin + ( atMax - atMin ) * f ) * ( bot->aimFactor > 0.0f ? bot->aimFactor : 1.0f );
+}
+
+float G_BotAimCone( const bot_t *bot )
+{
+  return G_BotSkillLerp( bot, bot_aimConeMax.value, bot_aimConeMin.value ) *
+         bot_aimSkillScale.value;
+}
+
+int G_BotAimDelay( const bot_t *bot )
+{
+  int d = (int)G_BotSkillLerp( bot, bot_aimDelayMax.value, bot_aimDelayMin.value );
+
+  return d < 0 ? 0 : d;
+}
+
+// "7" -> 7, "3-7" -> a random skill from 3 to 7; fallback when unreadable
+int G_BotPickSkill( const char *s, int fallback )
+{
+  int         lo, hi, t;
+  const char  *dash;
+
+  if( !s || !s[ 0 ] || s[ 0 ] < '0' || s[ 0 ] > '9' )
+    return fallback;
+
+  lo = hi = atoi( s );
+  dash = strchr( s, '-' );
+  if( dash && dash[ 1 ] >= '0' && dash[ 1 ] <= '9' )
+    hi = atoi( dash + 1 );
+
+  if( hi < lo )
+  {
+    t = lo;
+    lo = hi;
+    hi = t;
+  }
+  if( lo < 1 )
+    lo = 1;
+  if( hi > BOT_MAX_SKILL )
+    hi = BOT_MAX_SKILL;
+  if( lo > hi )
+    return fallback;
+
+  return lo + G_BotRandInt( hi - lo + 1 );
+}
+
+static int G_BotDefaultSkill( void )
+{
+  return G_BotPickSkill( bot_skill.string, 5 );
+}
+
+// queue the gesture button ("Come on!" for humans, a roar for aliens).
+// Kept rare: at most one every 10 s per bot and one every 2 s per team.
+void G_BotEmote( bot_t *bot, float chance, int delay )
+{
+  static int  teamNext[ NUM_TEAMS ];
+  team_t      team;
+
+  if( !bot_emote.integer || level.time < bot->nextEmote || bot->emoteAt )
+    return;
+
+  team = level.clients[ bot->clientNum ].pers.teamSelection;
+  if( team <= TEAM_NONE || team >= NUM_TEAMS || level.time < teamNext[ team ] )
+    return;
+
+  if( G_BotRandom( ) >= chance )
+    return;
+
+  bot->emoteAt = level.time + delay;
+  bot->nextEmote = level.time + 10000 + (int)( G_BotRandom( ) * 10000.0f );
+  teamNext[ team ] = level.time + 2000;
+}
+
 static void G_BotRandomPersonality( botPersonality_t *p )
 {
   // whole percentages, so the values survive being stored in the userinfo
@@ -421,15 +525,16 @@ void G_BotConnect( int clientNum, qboolean firstTime )
 
     memset( bot, 0, sizeof( *bot ) );
     G_BotRandomPersonality( &bot->pers );
+    bot->aimFactor = ( 85 + G_BotRandInt( 31 ) ) / 100.0f;
 
     // keep the same personality across map changes ("a,s,w,al"; parsed
     // by hand because the QVM's sscanf doesn't match literal characters)
     p = Info_ValueForKey( userinfo, "botstyle" );
     if( p[ 0 ] )
     {
-      int v[ 4 ], n = 0;
+      int v[ 5 ], n = 0;
 
-      while( n < 4 && *p )
+      while( n < 5 && *p )
       {
         v[ n++ ] = atoi( p );
         while( *p && *p != ',' )
@@ -438,7 +543,9 @@ void G_BotConnect( int clientNum, qboolean firstTime )
           p++;
       }
 
-      if( n == 4 )
+      if( n == 5 && v[ 4 ] >= 50 && v[ 4 ] <= 150 )
+        bot->aimFactor = v[ 4 ] / 100.0f;
+      if( n >= 4 )
       {
         bot->pers.aggression = v[ 0 ] / 100.0f;
         bot->pers.saver = v[ 1 ] / 100.0f;
@@ -453,7 +560,7 @@ void G_BotConnect( int clientNum, qboolean firstTime )
 
   skill = atoi( Info_ValueForKey( userinfo, "botskill" ) );
   if( skill < 1 || skill > BOT_MAX_SKILL )
-    skill = bot_skill.integer;
+    skill = G_BotDefaultSkill( );
   if( skill < 1 )
     skill = 1;
   if( skill > BOT_MAX_SKILL )
@@ -491,9 +598,10 @@ static void G_BotStoreTeam( bot_t *bot )
                        bot->wantTeam == TEAM_ALIENS ? "aliens" :
                        bot->wantTeam == TEAM_HUMANS ? "humans" : "auto" );
   Info_SetValueForKey( userinfo, "botskill", va( "%d", bot->skill ) );
-  Info_SetValueForKey( userinfo, "botstyle", va( "%d,%d,%d,%d",
+  Info_SetValueForKey( userinfo, "botstyle", va( "%d,%d,%d,%d,%d",
                        (int)( bot->pers.aggression * 100.0f + 0.5f ), (int)( bot->pers.saver * 100.0f + 0.5f ),
-                       bot->pers.weaponPref, bot->pers.alienPref ) );
+                       bot->pers.weaponPref, bot->pers.alienPref,
+                       (int)( bot->aimFactor * 100.0f + 0.5f ) ) );
   trap_SetUserinfo( bot->clientNum, userinfo );
 }
 
@@ -591,7 +699,7 @@ static void G_BotFillTeam( team_t team, int wanted )
       return;
     }
 
-    G_AddBot( NULL, team, bot_skill.integer, qtrue );
+    G_AddBot( NULL, team, G_BotDefaultSkill( ), qtrue );
   }
   else if( humans + bots > wanted && bots > 0 && worst >= 0 )
     G_RemoveBot( worst, "was removed to balance teams" );
@@ -813,11 +921,11 @@ CONSOLE COMMANDS
 static void Bot_Usage( void )
 {
   G_Printf( "bot commands:\n"
-            "  addbot [name] [aliens|humans|auto] [skill 1-10]\n"
+            "  addbot [name] [aliens|humans|auto] [skill 1-10 or range 3-7]\n"
             "  removebot <name|slot|all>        (alias kickbot)\n"
             "  kickbots [aliens|humans]         remove every bot (on a team)\n"
             "  botlist                          list bots and what they are doing\n"
-            "  botskill <name|slot|all> <1-10>  change skill\n"
+            "  botskill <name|slot|all> <1-10|3-7>  change skill (a range picks one per bot)\n"
             "  botteam <name|slot> <aliens|humans|spectate>\n"
             "  botfill <count> [aliens|humans]  keep teams at <count> players with bots\n"
             "  botcmd <name|slot> <command>     run a client command as the bot\n"
@@ -834,7 +942,7 @@ void Svcmd_AddBot_f( void )
   char    name[ MAX_NAME_LENGTH ] = "";
   char    arg[ MAX_TOKEN_CHARS ];
   team_t  team = TEAM_NONE;
-  int     skill = bot_skill.integer;
+  int     skill = G_BotDefaultSkill( );
   int     i, argc = trap_Argc( );
 
   // arguments in any order: a team keyword, a number (skill) or a name
@@ -849,8 +957,8 @@ void Svcmd_AddBot_f( void )
     else if( !Q_stricmp( arg, "auto" ) )
       team = TEAM_NONE;
     else if( arg[ 0 ] >= '0' && arg[ 0 ] <= '9' && atoi( arg ) > 0 && atoi( arg ) <= BOT_MAX_SKILL &&
-             strlen( arg ) <= 2 )
-      skill = atoi( arg );
+             strlen( arg ) <= 5 )
+      skill = G_BotPickSkill( arg, skill );   // "7" or a range like "3-7"
     else if( !Q_stricmp( arg, "help" ) || !Q_stricmp( arg, "?" ) )
     {
       Bot_Usage( );
@@ -938,7 +1046,7 @@ void Svcmd_BotList_f( void )
   };
   static const char *roleNames[ ] = { "attack", "defend", "builder", "roam" };
 
-  G_Printf( "slot skill team    class        weapon     hp  credits role    goal         style name\n" );
+  G_Printf( "slot skill  aim       team    class        weapon     hp  credits role    goal         style name\n" );
 
   for( i = 0; i < level.maxclients; i++ )
   {
@@ -949,7 +1057,8 @@ void Svcmd_BotList_f( void )
     ent = &g_entities[ i ];
     count++;
 
-    G_Printf( "%4d %5d %-7s %-12s %-10s %3d %8d %-7s %-12s %d%d%c%c  %s\n", i, bot->skill,
+    G_Printf( "%4d %5d  %4.1f/%-4d %-7s %-12s %-10s %3d %8d %-7s %-12s %d%d%c%c  %s\n", i, bot->skill,
+              G_BotAimCone( bot ), G_BotAimDelay( bot ),
               BG_TeamName( ent->client->pers.teamSelection ),
               ent->client->sess.spectatorState == SPECTATOR_NOT ?
                 BG_Class( ent->client->ps.stats[ STAT_CLASS ] )->name : "-",
@@ -970,20 +1079,20 @@ void Svcmd_BotList_f( void )
 
 void Svcmd_BotSkill_f( void )
 {
-  char  arg[ MAX_TOKEN_CHARS ];
-  int   i, n, skill;
+  char  arg[ MAX_TOKEN_CHARS ], range[ MAX_TOKEN_CHARS ];
+  int   i, n, skill, changed = 0;
 
   if( trap_Argc( ) < 3 )
   {
-    G_Printf( "usage: botskill <name|slot|all> <1-10>\n" );
+    G_Printf( "usage: botskill <name|slot|all> <1-10 | range like 3-7>\n"
+              "  a range gives each bot its own random skill in it\n" );
     return;
   }
 
-  trap_Argv( 2, arg, sizeof( arg ) );
-  skill = atoi( arg );
-  if( skill < 1 || skill > BOT_MAX_SKILL )
+  trap_Argv( 2, range, sizeof( range ) );
+  if( G_BotPickSkill( range, -1 ) < 0 )
   {
-    G_Printf( "skill must be between 1 and %d\n", BOT_MAX_SKILL );
+    G_Printf( "skill must be between 1 and %d, or a range like 3-7\n", BOT_MAX_SKILL );
     return;
   }
 
@@ -1001,10 +1110,17 @@ void Svcmd_BotSkill_f( void )
         continue;
     }
 
+    skill = G_BotPickSkill( range, g_bots[ i ].skill );
     g_bots[ i ].skill = skill;
     G_BotStoreTeam( &g_bots[ i ] );
-    G_Printf( "%s^7 is now skill %d\n", level.clients[ i ].pers.netname, skill );
+    G_Printf( "%s^7 is now skill %d (aim cone %.1f deg, aim delay %d ms)\n",
+              level.clients[ i ].pers.netname, skill,
+              G_BotAimCone( &g_bots[ i ] ), G_BotAimDelay( &g_bots[ i ] ) );
+    changed++;
   }
+
+  if( !changed )
+    G_Printf( "botskill: no bot matches '%s'\n", arg );
 }
 
 void Svcmd_BotTeam_f( void )
